@@ -149,23 +149,27 @@ async function startGame(q) {
   } catch (e) { toast(e.message); }
 }
 function stopAll() { stopTimer && stopTimer(); stopTimer = null; link && link.close(); link = null; }
-const hostCall = (action, extra = {}) => post(`/api/games/${game.pin}/host`, { key: game.hostKey, action, ...extra }).catch((e) => toast(e.message));
+const hostCall = (action, extra = {}) => post(`/api/games/${game.pin}/host`, { key: game.hostKey, action, ...extra }).then(() => link && link.poke()).catch((e) => toast(e.message));
 
 async function live() {
-  lastView = null;
+  lastView = null; lastSig = '';
   stopAll();
   try { const i = await (await fetch('/api/info')).json(); lan = i.lan.map((ip) => `http://${ip}:${i.port}`); } catch (e) {}
   const isLocal = /^(localhost|127\.|\[::1\])/.test(location.hostname);
   if (isLocal && lan.length) baseUrl = lan[0];
-  link = connect(`/api/games/${game.pin}/events?role=host&key=${game.hostKey}`, renderLive, (ok) => ($('#conn').textContent = ok ? '' : 'Reconnecting…'));
-  setTimeout(() => { if (!lastView) { sessionStorage.removeItem(SESSION); toast('That game no longer exists'); home(); } }, 4000);
+  link = connect(`/api/games/${game.pin}/state?role=host&key=${game.hostKey}`, renderLive, (ok) => ($('#conn').textContent = ok ? '' : 'Reconnecting…'),
+    () => { sessionStorage.removeItem(SESSION); stopAll(); toast('That game no longer exists'); home(); });
 }
 
 function joinUrl() { return `${baseUrl.replace(/\/$/, '')}/join/${game.pin}`; }
 function qrSvg(text) { const q = qrcode(0, 'M'); q.addData(text); q.make(); return q.createSvgTag({ cellSize: 6, margin: 0, scalable: true }); }
 
+let lastSig = '';
 function renderLive(v) {
   lastView = v;
+  const sig = JSON.stringify({ ...v, now: 0, skew: 0 }) + baseUrl;
+  if (sig === lastSig) return;
+  lastSig = sig;
   stopTimer && stopTimer(); stopTimer = null;
   if (v.state === 'lobby') {
     const isLocal = /^(localhost|127\.|\[::1\])/.test(new URL(baseUrl).hostname);
@@ -200,7 +204,7 @@ function renderLive(v) {
           : `<button class="btn ghost" id="plus">+10 s</button><button class="btn big" id="rev">Reveal answer now</button>`}
         <button class="btn plain" id="end">End quiz</button></div>
       ${rev ? `<div class="card" style="margin-top:18px"><h3 style="margin-bottom:10px">Leaderboard</h3>${leaderboardHtml(v.board)}</div>` : ''}`;
-    if (!rev) stopTimer = runTimer(v, $('.bar'), $('.tnum'));
+    if (!rev) stopTimer = runTimer(v, $('.bar'), $('.tnum'), () => setTimeout(() => link && link.poke(), 250));
     if (rev) $('#next').onclick = () => hostCall('next'); else { $('#rev').onclick = () => hostCall('reveal'); $('#plus').onclick = () => hostCall('extend', { seconds: 10 }); }
     $('#end').onclick = () => { if (confirm('End the quiz now and show final results?')) hostCall('end'); };
   } else if (v.state === 'finished') {
@@ -211,10 +215,8 @@ function renderLive(v) {
       <div class="card"><h3 style="margin-bottom:10px">How each question went</h3>${v.stats.map((s, i) => { const pct = s.answered ? Math.round((100 * s.correct) / s.answered) : 0; return `<div class="stat-row"><span class="muted">${i + 1}</span><span class="t">${esc(s.text)}</span><span class="mini"><i style="width:${pct}%"></i></span><b>${pct}%</b></div>`; }).join('')}</div></div>
       <div class="row" style="margin-top:16px;justify-content:center"><a class="btn" href="/api/games/${v.pin}/results.csv?key=${game.hostKey}">⬇ Download results (CSV)</a><button class="btn ghost" id="done">Back to my quizzes</button></div>`;
     $('#done').onclick = () => { stopAll(); lastView = null; home(); };
-    stopAll2();
   }
 }
-function stopAll2() { /* keep SSE open so CSV/state stay live; nothing to do */ }
 async function end() { await hostCall('end'); stopAll(); sessionStorage.removeItem(SESSION); lastView = null; home(); }
 
 home();

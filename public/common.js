@@ -26,25 +26,29 @@ async function post(url, body) {
   return j;
 }
 
-// Live connection with server-clock sync. Calls onView(view) for each update.
-function connect(url, onView, onStatus) {
-  let es, offset = 0, closed = false;
-  const open = () => {
-    es = new EventSource(url);
-    es.onmessage = (e) => {
-      const v = JSON.parse(e.data);
-      offset = v.now - Date.now();
-      v.skew = offset;
+// Live connection by polling (works on serverless hosts). Returns {close, poke}.
+function connect(url, onView, onStatus, onError) {
+  let closed = false, timer = null, busy = false, offset = 0, fails = 0;
+  const poll = async () => {
+    if (closed || busy) return;
+    busy = true;
+    clearTimeout(timer);
+    let delay = 1500;
+    try {
+      const t0 = Date.now();
+      const r = await fetch(url, { cache: 'no-store' });
+      const v = await r.json();
+      if (!r.ok) { if (r.status === 403 || r.status === 404) { closed = true; return onError && onError(r.status, v.error); } throw new Error(v.error); }
+      offset = v.now - (t0 + Date.now()) / 2; // server clock offset, corrected for latency
+      v.skew = offset; fails = 0;
       onStatus && onStatus(true);
       onView(v);
-    };
-    es.onerror = () => {
-      onStatus && onStatus(false);
-      if (es.readyState === 2 && !closed) setTimeout(open, 2000);
-    };
+      delay = v.state === 'question' ? 1000 : v.state === 'lobby' ? 1500 : 2000;
+    } catch (e) { fails++; onStatus && onStatus(fails < 2); delay = 2000; }
+    finally { busy = false; if (!closed) timer = setTimeout(poll, delay); }
   };
-  open();
-  return { close() { closed = true; es.close(); }, serverNow: () => Date.now() + offset };
+  poll();
+  return { close() { closed = true; clearTimeout(timer); }, poke() { if (!closed) { clearTimeout(timer); poll(); } } };
 }
 
 // Drives a countdown bar + number from a view. Returns stop().

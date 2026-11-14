@@ -2,7 +2,7 @@
 const app = $('#app');
 let pin = (location.pathname.match(/\/join\/(\d{6})/) || [])[1] || new URLSearchParams(location.search).get('pin') || '';
 const key = (p) => 'quizlive.player.' + p;
-let stopTimer = null, link = null, lastSig = '';
+let stopTimer = null, link = null;
 
 function saved() { try { return JSON.parse(localStorage.getItem(key(pin)) || 'null'); } catch (e) { return null; } }
 
@@ -33,22 +33,17 @@ function joinScreen(msg) {
 
 function start(pid) {
   link && link.close();
-  link = connect(`/api/games/${pin}/events?pid=${pid}`, render, (ok) => ($('#conn').textContent = ok ? '' : 'Reconnecting…'));
-  // If the server rejects (game gone), EventSource will keep failing: probe once.
-  setTimeout(async () => {
-    if (!lastSig) {
-      localStorage.removeItem(key(pin));
-      link.close();
-      joinScreen('Could not rejoin that game. Enter your name to join again.');
-    }
-  }, 4000);
+  link = connect(`/api/games/${pin}/state?pid=${pid}`, render, (ok) => ($('#conn').textContent = ok ? '' : 'Reconnecting…'),
+    (status, msg) => { localStorage.removeItem(key(pin)); stopTimer && stopTimer(); lastSig = ''; joinScreen(status === 404 ? msg : 'You are not in this game (it may have been reset or you were removed). Enter your name to join.'); });
 }
 
+let lastSig = '';
 function render(v) {
-  lastSig = v.state;
+  const sig = JSON.stringify({ ...v, now: 0, skew: 0 });
+  if (sig === lastSig) return;
+  lastSig = sig;
   stopTimer && stopTimer();
   stopTimer = null;
-  if (v.kicked) { localStorage.removeItem(key(pin)); link.close(); return joinScreen('You were removed from the game.'); }
   const me = v.me;
   const head = `<div class="meta"><span>${esc(me.name)}</span><span>${me.score.toLocaleString()} pts${me.streak >= 2 ? ' · 🔥' + me.streak : ''}</span></div>`;
 
@@ -62,12 +57,12 @@ function render(v) {
       <div class="qtext" style="font-size:clamp(20px,5.5vw,28px)">${esc(v.q.text)}</div>
       ${answered ? '' : optionsHtml(v.q, { click: true })}
       ${answered ? `<div class="card center pop"><h3>Answer locked in ✓</h3><p class="muted pulse">Waiting for the others…</p></div>` : ''}`;
-    stopTimer = runTimer(v, $('.bar'), $('.tnum'));
+    stopTimer = runTimer(v, $('.bar'), $('.tnum'), () => setTimeout(() => link && link.poke(), 250));
     if (!answered) app.querySelectorAll('.opt').forEach((b) => (b.onclick = async () => {
       app.querySelectorAll('.opt').forEach((x) => (x.disabled = true));
       b.style.outline = '4px solid var(--ink)';
-      try { await post(`/api/games/${pin}/answer`, { pid: saved().pid, choice: +b.dataset.i }); navigator.vibrate && navigator.vibrate(30); }
-      catch (e) { toast(e.message); }
+      try { await post(`/api/games/${pin}/answer`, { pid: saved().pid, choice: +b.dataset.i }); navigator.vibrate && navigator.vibrate(30); link.poke(); }
+      catch (e) { toast(e.message); link.poke(); }
     }));
   } else if (v.state === 'reveal') {
     const my = v.my;
